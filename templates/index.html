@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Jessica the Toll Assistant</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f7f7f7;
+      margin: 0;
+      padding: 20px;
+      color: #333;
+    }
+
+    #conversation {
+      max-width: 600px;
+      margin: 0 auto;
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      height: 70vh;
+      overflow-y: auto;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+
+    .message {
+      margin-bottom: 10px;
+      padding: 10px;
+      border-radius: 6px;
+    }
+
+    .user {
+      background-color: #e0f7fa;
+      text-align: right;
+    }
+
+    .assistant {
+      background-color: #fce4ec;
+      text-align: left;
+    }
+
+    button {
+      padding: 10px 18px;
+      font-size: 14px;
+      background-color: #1976d2;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 15px;
+    }
+
+    button:hover {
+      background-color: #1565c0;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Jessica (Toll Rep)</h2>
+  <div id="conversation"></div>
+  <button id="toggle-conversation">Start Conversation</button>
+
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  
+
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script>
+  const socket = io();
+  let audioContext, mediaStream, processor, mediaRecorder;
+  let isRecording = false;
+  let silenceStart = null;
+  let conversationActive = false;
+
+  const conversationEl = document.getElementById('conversation');
+  const toggleBtn = document.getElementById('toggle-conversation');
+
+  toggleBtn.addEventListener('click', () => {
+    if (!conversationActive) {
+      socket.emit("start_session");
+      conversationActive = true;
+      toggleBtn.innerText = "End Conversation";
+      startVADRecording();
+    } else {
+      conversationActive = false;
+      toggleBtn.innerText = "Start Conversation";
+      stopAll();
+    }
+  });
+
+  socket.on("transcript", (data) => {
+    if (data.text) appendMessage(data.text, "user");
+  });
+
+  socket.on("audio_response", (data) => {
+    appendMessage(data.text, "assistant");
+    const audio = new Audio("data:audio/mp3;base64," + data.audio);
+    audio.play();
+    audio.onended = () => {
+      if (conversationActive) {
+        startVADRecording();
+      }
+    };
+  });
+
+  function appendMessage(text, sender) {
+    const msgEl = document.createElement("div");
+    msgEl.className = "message " + sender;
+    msgEl.textContent = text;
+    conversationEl.appendChild(msgEl);
+    conversationEl.scrollTop = conversationEl.scrollHeight;
+  }
+
+  async function startVADRecording() {
+    audioContext = new AudioContext();
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    processor = audioContext.createScriptProcessor(2048, 1, 1);
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+
+    mediaRecorder = new MediaRecorder(mediaStream);
+    let chunks = [];
+    mediaRecorder.ondataavailable = e => chunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      if (chunks.length === 0) return;
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const arrayBuffer = await blob.arrayBuffer();
+      const base64 = arrayBufferToBase64(arrayBuffer);
+      socket.emit("audio_input", { audio: "data:audio/webm;base64," + base64 });
+    };
+
+    mediaRecorder.start();
+    isRecording = true;
+    silenceStart = null;
+
+    processor.onaudioprocess = function (event) {
+      const input = event.inputBuffer.getChannelData(0);
+      let total = 0;
+      for (let i = 0; i < input.length; i++) {
+        total += Math.abs(input[i]);
+      }
+      const rms = total / input.length;
+
+      if (rms > 0.01) {
+        silenceStart = null; // Voice detected
+      } else if (!silenceStart) {
+        silenceStart = Date.now();
+      } else if (Date.now() - silenceStart > 1000) {
+        stopAll();
+      }
+    };
+  }
+
+  function stopAll() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+    if (processor) processor.disconnect();
+    if (audioContext) audioContext.close();
+    if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+    isRecording = false;
+  }
+
+  function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+  }
+</script>
+
+</body>
+</html>
